@@ -1,0 +1,89 @@
+# n8n production stack: n8n + Postgres
+#
+# This is the deployment definition. The running container is disposable;
+# THIS FILE plus a Postgres dump plus the N8N_ENCRYPTION_KEY are the system.
+# Keep this file in git. Keep the real .env OUT of git (see .gitignore).
+#
+# Note: the top-level `version:` key is intentionally omitted — it is
+# obsolete in modern Docker Compose and only produces a warning.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # n8n waits for this to pass before starting (see depends_on below)
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    # PIN A SPECIFIC VERSION. Do not use :latest.
+    # Minimum safe floor (Q1 2026 CVE wave): 2.14.1 — but bump this to the
+    # current stable release and check https://github.com/n8n-io/n8n/security
+    # before you deploy. Treat a CVE advisory as a 48-hour patch window.
+    image: docker.n8n.io/n8nio/n8n:2.14.1
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Bound to localhost ONLY. n8n must never face the internet directly
+      # (unauthenticated RCE chains only work on internet-reachable instances).
+      # Put a reverse proxy / VPN in front of this for outside access.
+      - "127.0.0.1:5678:5678"
+    environment:
+      # --- Database ---
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # --- The master key. MUST be set before first run. See README. ---
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+
+      # --- Networking / webhooks ---
+      # Set to the real public URL once a proxy/domain is in place, so webhook
+      # nodes register the correct address.
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+
+      # --- Hardening / correctness ---
+      # Task runners are the modern, sandboxed execution path for Code nodes.
+      # Legacy (non-task-runner) mode was implicated in CVE-2025-68697.
+      N8N_RUNNERS_ENABLED: "true"
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      TZ: ${GENERIC_TIMEZONE}
+    volumes:
+      # Holds the auto-generated config, the encryption key file, and more.
+      - n8n_data:/home/node/.n8n
+
+  # --- OPTIONAL: Python extraction engine as a sidecar -------------------
+  # Your chosen architecture: n8n calls this over HTTP rather than shelling
+  # out via Execute Command, so the locked OCR layer stays untouched and the
+  # whole stack stays self-contained. Point `build` at your engine's repo /
+  # Dockerfile, then have n8n's HTTP Request node hit http://extractor:8000.
+  #
+  # extractor:
+  #   build: ./extractor          # path to your Python engine + Dockerfile
+  #   restart: unless-stopped
+  #   environment:
+  #     AZURE_DI_KEY: ${AZURE_DI_KEY}
+  #     MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+  #   # No ports block needed — only n8n (same compose network) calls it.
+  # ----------------------------------------------------------------------
+
+volumes:
+  postgres_data:
+  n8n_data:
