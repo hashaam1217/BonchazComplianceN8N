@@ -1,4 +1,4 @@
-# n8n production stack: n8n + Postgres
+# n8n production stack: n8n + Postgres + external task runners
 #
 # This is the deployment definition. The running container is disposable;
 # THIS FILE plus a Postgres dump plus the N8N_ENCRYPTION_KEY are the system.
@@ -6,7 +6,6 @@
 #
 # Note: the top-level `version:` key is intentionally omitted — it is
 # obsolete in modern Docker Compose and only produces a warning.
-
 services:
   postgres:
     image: postgres:16
@@ -23,7 +22,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
   n8n:
     # PIN A SPECIFIC VERSION. Do not use :latest.
     # Minimum safe floor (Q1 2026 CVE wave): 2.14.1 — but bump this to the
@@ -47,10 +45,8 @@ services:
       DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
       DB_POSTGRESDB_USER: ${POSTGRES_USER}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
-
       # --- The master key. MUST be set before first run. See README. ---
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-
       # --- Networking / webhooks ---
       # Set to the real public URL once a proxy/domain is in place, so webhook
       # nodes register the correct address.
@@ -58,17 +54,41 @@ services:
       N8N_HOST: ${N8N_HOST}
       N8N_PORT: 5678
       N8N_PROTOCOL: ${N8N_PROTOCOL}
-
-      # --- Hardening / correctness ---
-      # Task runners are the modern, sandboxed execution path for Code nodes.
-      # Legacy (non-task-runner) mode was implicated in CVE-2025-68697.
-      N8N_RUNNERS_ENABLED: "true"
+      # --- Task runners (external mode) ---
+      # Sandboxed execution path for Code nodes. Legacy (non-task-runner)
+      # mode was implicated in CVE-2025-68697.
+      # NOTE: N8N_RUNNERS_ENABLED is deprecated on 2.14.1 (n8n logs a notice
+      # telling you to remove it), so it is intentionally omitted.
+      N8N_RUNNERS_MODE: "external"
+      # Enables the native Python runner (vs. legacy Pyodide).
+      N8N_NATIVE_PYTHON_RUNNER: "true"
+      # Shared secret with the runner. From .env — keep it out of git.
+      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
       TZ: ${GENERIC_TIMEZONE}
     volumes:
       # Holds the auto-generated config, the encryption key file, and more.
       - n8n_data:/home/node/.n8n
-
+  n8n-runners:
+    # Version MUST match the n8n image exactly (docs requirement).
+    image: n8nio/runners:2.14.1
+    # Shares n8n's network namespace. Required workaround for the n8n bug
+    # (n8n-io/n8n #29742) where the Task Broker ignores
+    # N8N_RUNNERS_BROKER_LISTEN_ADDRESS and always binds to 127.0.0.1.
+    # By sharing the namespace, the runner reaches the broker on localhost.
+    network_mode: "service:n8n"
+    container_name: n8n-runners
+    restart: unless-stopped
+    depends_on:
+      - n8n
+    environment:
+      # No quotes in KEY=value list form — quotes become part of the value
+      # and break the token match with n8n (causes 403 / no runner registers).
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN}
+      # 127.0.0.1 because network_mode shares n8n's namespace — the hostname
+      # "n8n" does NOT resolve here; the broker lives on shared localhost.
+      - N8N_RUNNERS_TASK_BROKER_URI=http://127.0.0.1:5679
+      - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=0
   # --- OPTIONAL: Python extraction engine as a sidecar -------------------
   # Your chosen architecture: n8n calls this over HTTP rather than shelling
   # out via Execute Command, so the locked OCR layer stays untouched and the
@@ -83,7 +103,6 @@ services:
   #     MISTRAL_API_KEY: ${MISTRAL_API_KEY}
   #   # No ports block needed — only n8n (same compose network) calls it.
   # ----------------------------------------------------------------------
-
 volumes:
   postgres_data:
   n8n_data:
