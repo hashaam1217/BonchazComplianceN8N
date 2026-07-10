@@ -12,6 +12,19 @@ set -euo pipefail
 cd "$(dirname "$0")/.."          # run from repo root regardless of cwd
 set -a; source .env; set +a      # load POSTGRES_* etc.
 
+# Derive the Docker Compose volume name the SAME way Compose does: honour an
+# explicit COMPOSE_PROJECT_NAME, else lower-case the project directory and strip
+# anything outside [a-z0-9_-]. (Hardcoding a name here silently breaks the moment
+# the directory is renamed — which is exactly the bug this replaces.)
+PROJECT="${COMPOSE_PROJECT_NAME:-$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]//g')}"
+N8N_VOL="${PROJECT}_n8n_data"
+if ! docker volume inspect "$N8N_VOL" >/dev/null 2>&1; then
+  echo "ERROR: expected n8n data volume '$N8N_VOL' does not exist." >&2
+  echo "Has the stack been started (docker compose up -d)? Volumes present:" >&2
+  docker volume ls --format '  {{.Name}}' | grep -iE 'n8n|postgres' >&2 || true
+  exit 1
+fi
+
 TS="$(date +%Y%m%d-%H%M%S)"
 DEST="backups/${TS}"
 mkdir -p "$DEST"
@@ -21,10 +34,10 @@ docker compose exec -T postgres \
   pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc \
   > "${DEST}/n8n-postgres.dump"
 
-echo "[2/2] Archiving n8n data volume -> ${DEST}/n8n-data.tar.gz"
+echo "[2/2] Archiving n8n data volume (${N8N_VOL}) -> ${DEST}/n8n-data.tar.gz"
 # Mount the named volume into a throwaway container and tar its contents.
 docker run --rm \
-  -v n8n-stack_n8n_data:/data:ro \
+  -v "${N8N_VOL}:/data:ro" \
   -v "$(pwd)/${DEST}:/backup" \
   alpine \
   tar czf /backup/n8n-data.tar.gz -C /data .

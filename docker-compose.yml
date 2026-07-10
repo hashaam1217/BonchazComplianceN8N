@@ -66,6 +66,7 @@ services:
       N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
       TZ: ${GENERIC_TIMEZONE}
+      N8N_SKIP_AUTH_ON_OAUTH_CALLBACK: true
     volumes:
       # Holds the auto-generated config, the encryption key file, and more.
       - n8n_data:/home/node/.n8n
